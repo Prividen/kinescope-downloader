@@ -16,6 +16,7 @@ BASEURL = "https://kinescope.io"
 AUDIO_CHUNK_SEGMENTS = 200
 VIDEO_CHUNK_SEGMENTS = 100
 SAFE_CHUNK_LEN = 24000000
+REFERER = BASEURL
 DEBUG = 0
 
 
@@ -102,11 +103,15 @@ debug = os.getenv("DEBUG", DEBUG)
 audio_chunk_segments = os.getenv("AUDIO_CHUNK_SEGMENTS", AUDIO_CHUNK_SEGMENTS)
 video_chunk_segments = os.getenv("VIDEO_CHUNK_SEGMENTS", VIDEO_CHUNK_SEGMENTS)
 safe_chunk_len = os.getenv("SAFE_CHUNK_LEN", SAFE_CHUNK_LEN)
+referer = os.getenv("REFERER", REFERER)
+
 
 
 # obtain XML with video segments description
 print("Get video description... ", end='')
-mpd_raw = urllib.request.urlopen(f"{baseurl}/{video_id}/master.mpd").read()
+mpd_req = urllib.request.Request(f"{baseurl}/{video_id}/master.mpd")
+mpd_req.add_header('Referer', referer)
+mpd_raw = urllib.request.urlopen(mpd_req).read()
 
 # or can be read from file
 # with open("master.mpd", 'r') as f:
