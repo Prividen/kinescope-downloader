@@ -2,8 +2,9 @@
 # kinescope-downloader (c) Michael A. Kangin 2022
 # License: GPLv2
 # Script parameters: <video-id> [video-name]
-# video-id looks like '201133726' and can be obtain from browser network console
-# require 'ffmpeg' utility
+# video-id looks like '201234567' and can be obtain from browser network console
+# (you can filter output for "master.mpd" file).
+# This script requires 'ffmpeg' utility
 
 import os
 import subprocess
