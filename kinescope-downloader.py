@@ -185,7 +185,7 @@ with open(f"{video_id}.video", "wb") as f:
 print("Video stream done.\n")
 
 # Combine audio and video streams in one ready-to-play MP4 container
-convert_cmd = f"ffmpeg -y -i {video_id}.video -i {video_id}.audio -c copy -bsf:a aac_adtstoasc {video_name}.mp4"
+convert_cmd = f"ffmpeg -y -i {video_id}.video -i {video_id}.audio -c copy -bsf:a aac_adtstoasc '{video_name}.mp4'"
 print("Converting video file... ", end='')
 sys.stdout.flush()
 run_res = subprocess.run(convert_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
