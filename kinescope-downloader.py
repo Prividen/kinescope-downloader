@@ -8,9 +8,11 @@
 
 import os
 import subprocess
-import xmltodict
-import urllib.request
 import sys
+import urllib.request
+from typing import Dict, List
+
+import xmltodict
 
 # These constants can be re-assign from environments
 BASEURL = "https://kinescope.io"
@@ -21,11 +23,18 @@ REFERER = BASEURL
 DEBUG = 0
 
 
-def err_exit(err_msg):
+def err_exit(err_msg: str) -> None:
     raise SystemExit(f"Error: {err_msg}")
 
 
-def get_media_byte_range(req, from_b, to_b, first_seg, last_seg, total_segs):
+def get_media_byte_range(
+        req: urllib.request.Request,
+        from_b: int,
+        to_b: int,
+        first_seg: int,
+        last_seg: int,
+        total_segs: int,
+        debug: bool = False) -> bytes:
     # print some progress info, apply actual 'Range' header to request object and download the segment
     info_out = f"Media segment: {last_seg + 1}/{total_segs} ({(last_seg + 1) / total_segs * 100:2.2f}%) "
     debug_out = f"Media segment: {first_seg + 1}-{last_seg + 1}/{total_segs}\t({last_seg - first_seg + 1})" \
@@ -36,10 +45,18 @@ def get_media_byte_range(req, from_b, to_b, first_seg, last_seg, total_segs):
         print(info_out, end="\r")
 
     req.add_header('Range', f"bytes={from_b}-{to_b}")
-    return urllib.request.urlopen(req).read()
+    res = urllib.request.urlopen(req).read()
+    if not isinstance(res, bytes):
+        raise TypeError
+    return res
 
 
-def get_segments(req, segments, chunk):
+def get_segments(
+        req: urllib.request.Request,
+        segments: List[Dict[str, str]],
+        chunk: int,
+        safe_chunk_len: int,
+        debug: bool) -> bytes:
     # will try to combine a few (*_CHUNK_SEGMENTS) segments to download together
     # it will significantly improve speed
     media = b''
@@ -78,122 +95,128 @@ def get_segments(req, segments, chunk):
         offs_b = int(segments[seg_pointer - 1]["@mediaRange"].split('-')[1])
 
         # download the chunk
-        media += get_media_byte_range(req, offs_a, offs_b, seg_from, seg_pointer - 1, total_segments)
+        media += get_media_byte_range(req, offs_a, offs_b, seg_from, seg_pointer - 1, total_segments, debug)
 
     print("")
     return media
 
 
-# ========== start here ===========
-# initialization and configuration
-video_id = ''
-video_name = ''
+def main() -> None:
+    # ========== start here ===========
+    # initialization and configuration
+    video_id = ''
+    video_name = ''
 
-try:
-    video_id = sys.argv[1]
-except IndexError:
-    err_exit("Please provide video ID")
+    try:
+        video_id = sys.argv[1]
+    except IndexError:
+        err_exit("Please provide video ID")
 
-try:
-    video_name = sys.argv[2]
-except IndexError:
-    video_name = video_id
+    try:
+        video_name = sys.argv[2]
+    except IndexError:
+        video_name = video_id
 
-baseurl = os.getenv("BASEURL", BASEURL)
-debug = os.getenv("DEBUG", DEBUG)
-audio_chunk_segments = os.getenv("AUDIO_CHUNK_SEGMENTS", AUDIO_CHUNK_SEGMENTS)
-video_chunk_segments = os.getenv("VIDEO_CHUNK_SEGMENTS", VIDEO_CHUNK_SEGMENTS)
-safe_chunk_len = os.getenv("SAFE_CHUNK_LEN", SAFE_CHUNK_LEN)
-referer = os.getenv("REFERER", REFERER)
+    baseurl = os.getenv("BASEURL", BASEURL)
+    debug = bool(int(os.getenv("DEBUG", str(DEBUG))))
+    audio_chunk_segments = int(os.getenv("AUDIO_CHUNK_SEGMENTS", str(AUDIO_CHUNK_SEGMENTS)))
+    video_chunk_segments = int(os.getenv("VIDEO_CHUNK_SEGMENTS", str(VIDEO_CHUNK_SEGMENTS)))
+    safe_chunk_len = int(os.getenv("SAFE_CHUNK_LEN", str(SAFE_CHUNK_LEN)))
+    referer = os.getenv("REFERER", REFERER)
 
+    # obtain XML with video segments description
+    print("Get video description... ", end='')
+    mpd_req = urllib.request.Request(f"{baseurl}/{video_id}/master.mpd")
+    mpd_req.add_header('Referer', referer)
+    mpd_raw = urllib.request.urlopen(mpd_req).read()
 
+    # or can be read from file
+    # with open("master.mpd", 'r') as f:
+    #     mpd_raw = f.read()
 
-# obtain XML with video segments description
-print("Get video description... ", end='')
-mpd_req = urllib.request.Request(f"{baseurl}/{video_id}/master.mpd")
-mpd_req.add_header('Referer', referer)
-mpd_raw = urllib.request.urlopen(mpd_req).read()
+    # parse XML into internal object
+    mpd = xmltodict.parse(mpd_raw)
+    print("Done.\n")
 
-# or can be read from file
-# with open("master.mpd", 'r') as f:
-#     mpd_raw = f.read()
+    # To get any media segment, we need provide its URL and 'Range' header
+    # this info present in XML description
 
-# parse XML into internal object
-mpd = xmltodict.parse(mpd_raw)
-print("Done.\n")
+    # mpd['MPD']['Period']['AdaptationSet'][0]["Representation"] - array of video streams with different resolutions
+    # mpd['MPD']['Period']['AdaptationSet'][1]["Representation"] - the only audio stream
 
-# To get any media segment, we need provide its URL and 'Range' header
-# this info present in XML description
+    # the first media segment described in ["SegmentList"]["Initialization"] field
+    # all others - array of URL/range pairs at ["SegmentList"]["SegmentURL"]
 
-# mpd['MPD']['Period']['AdaptationSet'][0]["Representation"] - array of video streams with different resolutions
-# mpd['MPD']['Period']['AdaptationSet'][1]["Representation"] - the only audio stream
+    adapt_set = mpd['MPD']['Period']['AdaptationSet']
 
-# the first media segment described in ["SegmentList"]["Initialization"] field
-# all others - array of URL/range pairs at ["SegmentList"]["SegmentURL"]
-
-# Download audio stream
-print("Get audio stream...")
-# First, we are prepare to download init segment for this stream
-audio_url = mpd['MPD']['Period']['AdaptationSet'][1]["Representation"]["SegmentList"]["Initialization"]["@sourceURL"]
-bytes_range = mpd['MPD']['Period']['AdaptationSet'][1]["Representation"]["SegmentList"]["Initialization"]["@range"]
-# create request object
-audio_req = urllib.request.Request(audio_url)
-# add actual Range header
-audio_req.add_header('Range', f"bytes={bytes_range}")
-# download init segment
-audio = urllib.request.urlopen(audio_req).read()
-# Download all other segments for this stream
-audio += get_segments(
-    audio_req,
-    mpd['MPD']['Period']['AdaptationSet'][1]["Representation"]["SegmentList"]["SegmentURL"],
-    audio_chunk_segments
-)
-
-# Save audio stream in temporary file
-with open(f"{video_id}.audio", "wb") as f:
-    f.write(audio)
-print("Audio stream done.\n")
-
-
-# Download video stream
-print("Get video stream...")
-# get the best available resolution
-max_width = int(mpd['MPD']['Period']['AdaptationSet'][0]["@maxWidth"])
-
-video = b''
-for video_stream in mpd['MPD']['Period']['AdaptationSet'][0]["Representation"]:
-    # skip low resolution video streams
-    if int(video_stream["@width"]) < max_width:
-        continue
-
-    video_url = video_stream["SegmentList"]["Initialization"]["@sourceURL"]
-    bytes_range = video_stream["SegmentList"]["Initialization"]["@range"]
-    video_req = urllib.request.Request(video_url)
-    video_req.add_header('Range', f"bytes={bytes_range}")
-    video = urllib.request.urlopen(video_req).read()
-    video += get_segments(
-        video_req,
-        video_stream["SegmentList"]["SegmentURL"],
-        video_chunk_segments
+    # Download audio stream
+    print("Get audio stream...")
+    # First, we are prepare to download init segment for this stream
+    audio_url = adapt_set[1]["Representation"]["SegmentList"]["Initialization"]["@sourceURL"]
+    bytes_range = adapt_set[1]["Representation"]["SegmentList"]["Initialization"]["@range"]
+    # create request object
+    audio_req = urllib.request.Request(audio_url)
+    # add actual Range header
+    audio_req.add_header('Range', f"bytes={bytes_range}")
+    # download init segment
+    audio = urllib.request.urlopen(audio_req).read()
+    # Download all other segments for this stream
+    audio += get_segments(
+        audio_req,
+        adapt_set[1]["Representation"]["SegmentList"]["SegmentURL"],
+        audio_chunk_segments,
+        safe_chunk_len,
+        debug
     )
-    # we need only one video stream
-    break
 
-# save video stream in temporary file
-with open(f"{video_id}.video", "wb") as f:
-    f.write(video)
-print("Video stream done.\n")
+    # Save audio stream in temporary file
+    with open(f"{video_id}.audio", "wb") as file_:
+        file_.write(audio)
+    print("Audio stream done.\n")
 
-# Combine audio and video streams in one ready-to-play MP4 container
-convert_cmd = f"ffmpeg -y -i {video_id}.video -i {video_id}.audio -c copy -bsf:a aac_adtstoasc {video_name}.mp4"
-print("Converting video file... ", end='')
-sys.stdout.flush()
-run_res = subprocess.run(convert_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-if run_res.returncode:
-    err_exit(f"Error video convert invocation: {run_res.stderr.decode()}")
-else:
-    os.unlink(f"{video_id}.audio")
-    os.unlink(f"{video_id}.video")
-    print(f"Done: {video_name}.mp4")
+    # Download video stream
+    print("Get video stream...")
+    # get the best available resolution
+    max_width = int(adapt_set[0]["@maxWidth"])
 
-pass
+    video = b''
+    for video_stream in adapt_set[0]["Representation"]:
+        # skip low resolution video streams
+        if int(video_stream["@width"]) < max_width:
+            continue
+
+        video_url = video_stream["SegmentList"]["Initialization"]["@sourceURL"]
+        bytes_range = video_stream["SegmentList"]["Initialization"]["@range"]
+        video_req = urllib.request.Request(video_url)
+        video_req.add_header('Range', f"bytes={bytes_range}")
+        video = urllib.request.urlopen(video_req).read()
+        video += get_segments(
+            video_req,
+            video_stream["SegmentList"]["SegmentURL"],
+            video_chunk_segments,
+            safe_chunk_len,
+            debug
+        )
+        # we need only one video stream
+        break
+
+    # save video stream in temporary file
+    with open(f"{video_id}.video", "wb") as file_:
+        file_.write(video)
+    print("Video stream done.\n")
+
+    # Combine audio and video streams in one ready-to-play MP4 container
+    convert_cmd = f"ffmpeg -y -i {video_id}.video -i {video_id}.audio -c copy -bsf:a aac_adtstoasc '{video_name}.mp4'"
+    print("Converting video file... ", end='')
+    sys.stdout.flush()
+    run_res = subprocess.run(convert_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if run_res.returncode:
+        err_exit(f"Error video convert invocation: {run_res.stderr.decode()}")
+    else:
+        os.unlink(f"{video_id}.audio")
+        os.unlink(f"{video_id}.video")
+        print(f"Done: {video_name}.mp4")
+
+
+if __name__ == '__main__':
+    main()
